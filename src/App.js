@@ -1,6 +1,6 @@
 import React from 'react';
 import './App.css';
-import EmailSigner from './EmailSigner';
+import EmailSigner from './EmailSignAndVerifier';
 import EmailVerifier from './EmailVerifier';
 
 function App() {
@@ -8,7 +8,6 @@ function App() {
     <div className="App">
       <header className="App-header">
         <EmailSigner />
-        <EmailVerifier />
       </header>
     </div>
   );
