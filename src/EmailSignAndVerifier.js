@@ -24,7 +24,7 @@ const EmailSigner = () => {
     reader.onload = async (e) => {
       try {
         const arrayBuffer = e.target.result;
-        const password = prompt("Enter the password for the P12 file:"); 
+        const password = prompt("Enter the password for the P12 file:");
         const p12Der = forge.util.createBuffer(arrayBuffer);
         const p12Asn1 = forge.asn1.fromDer(p12Der);
         const p12 = forge.pkcs12.pkcs12FromAsn1(p12Asn1, false, password);
@@ -37,7 +37,6 @@ const EmailSigner = () => {
         // Extract the CA certificate and end-entity certificate
         const certBags = p12.getBags({ bagType: forge.pki.oids.certBag });
         const certificates = certBags[forge.pki.oids.certBag];
-
         if (certificates && certificates.length > 0) {
           // Assuming the first cert is the end-entity cert and the rest are CA certs
           const endEntityCert = certificates[0].cert;
@@ -45,8 +44,9 @@ const EmailSigner = () => {
 
           // Convert to PEM format
           const pkcs8PrivateKey = forge.pki.privateKeyToAsn1(privateKeyObj);
+        
           const pkcs8Asn1 = forge.pki.wrapRsaPrivateKey(pkcs8PrivateKey);
-          const privateKeyPem = forge.pki.privateKeyInfoToPem(pkcs8Asn1);;
+          const privateKeyPem = forge.pki.privateKeyInfoToPem(pkcs8Asn1);
           const endEntityCertPem = forge.pki.certificateToPem(endEntityCert);
           const caCertificatePem = caCerts.map(cert => forge.pki.certificateToPem(cert.cert)).join('\n');
 
@@ -94,20 +94,22 @@ const EmailSigner = () => {
         }
       }
 
-      const crypto = window.crypto || window.msCrypto;
+      const crypto = pkijs.getCrypto(true);
       const encoder = new TextEncoder();
       const data = encoder.encode(body);
       const hashBuffer = await crypto.subtle.digest('SHA-256', data);
       
       const certificatex = await getCertificate(certificate);
+      const emailAddress = certificatex.subject.typesAndValues.map(typeAndValue => typeAndValue.value.valueBlock.value).join(", ");
+      alert("Email Address from Certificate: " + emailAddress);
       const certificateca = await getCertificate(caCertificate);
       const certificateExtraca = await getCertificate(caExtraCertificate);
       const signerInfo = new pkijs.SignerInfo({
+        version: 1,
         sid: new pkijs.IssuerAndSerialNumber({
           issuer: certificatex.issuer,
           serialNumber: certificatex.serialNumber,
         }),
-        
         signedAttrs: new pkijs.SignedAndUnsignedAttributes({
           type: 0, // Type 0 for signed attributes
           attributes: [
@@ -130,6 +132,24 @@ const EmailSigner = () => {
               ]
             }),
             // new pkijs.Attribute({
+            //   type: "1.2.840.113549.1.9.15", // SMIMECapabilities OID
+            //   values: [
+            //     // Values that indicate specific capabilities, such as encryption or hashing algorithms
+            //     new asn1js.Sequence({
+            //       value: [
+            //         new pkijs.SMIMECapability({
+            //           capabilityID: "1.2.840.113549.3.7", // OID for TripleDES encryption
+            //           parameters: new asn1js.Null() // Parameters specific to the capability
+            //         }),
+            //         new pkijs.SMIMECapability({
+            //           capabilityID: "2.16.840.1.101.3.4.1.2", // OID for AES-128 encryption
+            //           parameters: new asn1js.Null()
+            //         })
+            //       ]
+            //     })
+            //   ]
+            // }),
+            // new pkijs.Attribute({
             //   type: "1.3.6.1.4.1.311.16.4", // OID for signing time
             //   values: [
             //     new asn1js.OctetString({ valueDate: new Date() }) // Current date
@@ -150,11 +170,10 @@ const EmailSigner = () => {
           ]
         })
       });
-
+      
       const cmsSigned = new pkijs.SignedData({
         encapContentInfo: new pkijs.EncapsulatedContentInfo({
           eContentType: "1.2.840.113549.1.7.1", // data type
-          eContent: new asn1js.OctetString({ valueHex: pvutils.stringToArrayBuffer(body) }),
         }),
         signerInfos: [signerInfo,
         ],
@@ -162,7 +181,6 @@ const EmailSigner = () => {
 
 
       cmsSigned.certificates = [certificatex, certificateca];
-
 
       const pem = privateKey
         .replace(/-----BEGIN PRIVATE KEY-----/, "")
@@ -174,7 +192,7 @@ const EmailSigner = () => {
       );
 
       // 2. Import the key to a CryptoKey object
-      const cryptoKey = await window.crypto.subtle.importKey(
+      const cryptoKey = await crypto.subtle.importKey(
         "pkcs8", // Format of the key
         binaryDer.buffer,
         {
@@ -185,14 +203,24 @@ const EmailSigner = () => {
         ["sign"] // Key usage
       );
 
-      await cmsSigned.sign(cryptoKey, 0, "SHA-256");
+      await cmsSigned.sign(cryptoKey, 0, "SHA-256", pvutils.stringToArrayBuffer(body), crypto);
 
       const cmsContentInfo = new pkijs.ContentInfo({
-        contentType: "1.2.840.113549.1.7.2", // signedData type
-        content: cmsSigned.toSchema(),
+        contentType: "1.2.840.113549.1.7.2",
+        content: cmsSigned.toSchema(true),
       });
 
-      const cmsSignedBuffer = cmsContentInfo.toSchema().toBER(false);
+      const _cmsSignedSchema = cmsContentInfo.toSchema();
+
+  //#region Make length of some elements in "indefinite form"
+      _cmsSignedSchema.lenBlock.isIndefiniteForm = true;
+
+      const block1 = _cmsSignedSchema.valueBlock.value[1];
+      block1.lenBlock.isIndefiniteForm = true;
+
+      const block2 = block1.valueBlock.value[0];
+      block2.lenBlock.isIndefiniteForm = true;
+      const cmsSignedBuffer = _cmsSignedSchema.toBER(false);
       const signedBoundy = "------------carbonioSigned" + Date.now();
       const signedBoundrySeparater = "--" + signedBoundy;
       const signature = btoa(String.fromCharCode(...new Uint8Array(cmsSignedBuffer)));
@@ -220,7 +248,6 @@ const EmailSigner = () => {
       alert('Error signing email:' + err);
       setError('Failed to sign email. Please check the console for more details.');
     }
-
 
   };
 
@@ -445,6 +472,9 @@ const EmailSigner = () => {
       <button onClick={decyptEmail}> Decrypt</button>
       <br />
       <button onClick={all}>Sign Email And Verify and Encrypt</button>
+      <br />
+      <br />
+      <text>Decrypted Email</text>
       <br />
       <textarea readOnly value={decryptedEmail} style={{ width: '100%', height: '200px' }} />
       {error && <p style={{ color: 'red' }}>{error}</p>}
